@@ -147,8 +147,42 @@ def main(args):
                                            warmup_iters=100)
         print_fn('train image number:{}'.format(len(train_data)))
 
+        start_epoch = 0
+        if args.resume:
+            checkpoint = torch.load(args.resume, map_location=device)
+
+            checkpoint_fusion_type = checkpoint.get('inp_fusion_type')
+            if checkpoint_fusion_type is not None and checkpoint_fusion_type != args.inp_fusion_type:
+                raise ValueError(
+                    'Fusion type mismatch: checkpoint uses {}, but current run uses {}.'.format(
+                        checkpoint_fusion_type, args.inp_fusion_type
+                    )
+                )
+
+            checkpoint_total_epochs = checkpoint.get('total_epochs')
+            if checkpoint_total_epochs is not None and checkpoint_total_epochs != args.total_epochs:
+                raise ValueError(
+                    'total_epochs mismatch: checkpoint uses {}, but current run uses {}.'.format(
+                        checkpoint_total_epochs, args.total_epochs
+                    )
+                )
+
+            checkpoint_steps_per_epoch = checkpoint.get('steps_per_epoch')
+            if checkpoint_steps_per_epoch is not None and checkpoint_steps_per_epoch != len(train_dataloader):
+                raise ValueError(
+                    'Steps per epoch mismatch: checkpoint uses {}, but current dataloader uses {}.'.format(
+                        checkpoint_steps_per_epoch, len(train_dataloader)
+                    )
+                )
+
+            model.load_state_dict(checkpoint['model_state_dict'], strict=True)
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            lr_scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            start_epoch = checkpoint['epoch'] + 1
+            print_fn('Resumed training from epoch {}'.format(start_epoch))
+
         # Train
-        for epoch in range(args.total_epochs):
+        for epoch in range(start_epoch, args.total_epochs):
             model.train()
             loss_list = []
             for img, _ in tqdm(train_dataloader, ncols=80):
@@ -163,6 +197,20 @@ def main(args):
                 loss_list.append(loss.item())
                 lr_scheduler.step()
             print_fn('epoch [{}/{}], loss:{:.4f}'.format(epoch+1, args.total_epochs, np.mean(loss_list)))
+
+            checkpoint = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': lr_scheduler.state_dict(),
+                'inp_fusion_type': args.inp_fusion_type,
+                'total_epochs': args.total_epochs,
+                'steps_per_epoch': len(train_dataloader),
+            }
+            checkpoint_path = os.path.join(args.save_dir, args.save_name, 'checkpoint_last.pth')
+            torch.save(checkpoint, checkpoint_path)
+            print_fn('Saved resume checkpoint to {}'.format(checkpoint_path))
+
             if (epoch + 1) % args.total_epochs == 0:
                 auroc_sp_list, ap_sp_list, f1_sp_list = [], [], []
                 auroc_px_list, ap_px_list, f1_px_list, aupro_px_list = [], [], [], []
@@ -249,6 +297,7 @@ if __name__ == '__main__':
     parser.add_argument('--total_epochs', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--phase', type=str, default='train')
+    parser.add_argument('--resume', type=str, default='')
 
     args = parser.parse_args()
    
