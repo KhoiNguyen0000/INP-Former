@@ -109,14 +109,29 @@ def main(args):
         INP_Guided_Decoder.append(blk)
     INP_Guided_Decoder = nn.ModuleList(INP_Guided_Decoder)
 
-    model = INP_Former(encoder=encoder, bottleneck=Bottleneck, aggregation=INP_Extractor, decoder=INP_Guided_Decoder,
-                             target_layers=target_layers,  remove_class_token=True, fuse_layer_encoder=fuse_layer_encoder,
-                             fuse_layer_decoder=fuse_layer_decoder, prototype_token=INP)
+    model = INP_Former(
+        encoder=encoder,
+        bottleneck=Bottleneck,
+        aggregation=INP_Extractor,
+        decoder=INP_Guided_Decoder,
+        target_layers=target_layers,
+        remove_class_token=True,
+        fuse_layer_encoder=fuse_layer_encoder,
+        fuse_layer_decoder=fuse_layer_decoder,
+        prototype_token=INP,
+        inp_fusion_type=args.inp_fusion_type,
+    )
     model = model.to(device)
 
     if args.phase == 'train':
         # Model Initialization
-        trainable = nn.ModuleList([Bottleneck, INP_Guided_Decoder, INP_Extractor, INP])
+        trainable = nn.ModuleList([
+            Bottleneck,
+            INP_Guided_Decoder,
+            INP_Extractor,
+            INP,
+            model.inp_fusion,
+        ])
         for m in trainable.modules():
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight, std=0.01, a=-0.03, b=0.03)
@@ -167,10 +182,16 @@ def main(args):
                     print_fn(
                         '{}: I-Auroc:{:.4f}, I-AP:{:.4f}, I-F1:{:.4f}, P-AUROC:{:.4f}, P-AP:{:.4f}, P-F1:{:.4f}, P-AUPRO:{:.4f}'.format(
                             item, auroc_sp, ap_sp, f1_sp, auroc_px, ap_px, f1_px, aupro_px))
-
+                    
                 print_fn('Mean: I-Auroc:{:.4f}, I-AP:{:.4f}, I-F1:{:.4f}, P-AUROC:{:.4f}, P-AP:{:.4f}, P-F1:{:.4f}, P-AUPRO:{:.4f}'.format(
                         np.mean(auroc_sp_list), np.mean(ap_sp_list), np.mean(f1_sp_list),
                         np.mean(auroc_px_list), np.mean(ap_px_list), np.mean(f1_px_list), np.mean(aupro_px_list)))
+                if args.inp_fusion_type == "weighted":
+                    weights = torch.softmax(
+                        model.inp_fusion.logits.detach(), dim=0
+                    ).cpu().tolist()
+
+                    print_fn(f"INP fusion weights: {weights}")
                 torch.save(model.state_dict(), os.path.join(args.save_dir, args.save_name, 'model.pth'))
                 model.train()
     elif args.phase == 'test':
@@ -218,14 +239,28 @@ if __name__ == '__main__':
     parser.add_argument('--input_size', type=int, default=448)
     parser.add_argument('--crop_size', type=int, default=392)
     parser.add_argument('--INP_num', type=int, default=6)
-
+    parser.add_argument(
+        "--inp_fusion_type",
+        type=str,
+        default="mean",
+        choices=["mean", "sum", "weighted", "concat"],
+    )
     # training info
     parser.add_argument('--total_epochs', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--phase', type=str, default='train')
 
     args = parser.parse_args()
-    args.save_name = args.save_name + f'_dataset={args.dataset}_Encoder={args.encoder}_Resize={args.input_size}_Crop={args.crop_size}_INP_num={args.INP_num}'
+   
+    args.save_name = (
+        args.save_name
+        + f'_dataset={args.dataset}'
+        + f'_Encoder={args.encoder}'
+        + f'_Resize={args.input_size}'
+        + f'_Crop={args.crop_size}'
+        + f'_INP_num={args.INP_num}'
+        + f'_Fusion={args.inp_fusion_type}'
+    )
     logger = get_logger(args.save_name, os.path.join(args.save_dir, args.save_name))
     print_fn = logger.info
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
